@@ -37,21 +37,55 @@ export function runWithCorrelationContext<T>(
   return logContextStorage.run(context, fn);
 }
 
-const defaultOptions: LoggerOptions = {
+export const defaultRedactPaths = [
+  'authorization',
+  '*.authorization',
+  '*.*.authorization',
+  'headers.authorization',
+  '*.headers.authorization',
+  'req.headers.authorization',
+  '*.req.headers.authorization',
+  'password',
+  '*.password',
+  '*.*.password',
+  'secret',
+  '*.secret',
+  '*.*.secret',
+  'token',
+  '*.token',
+  '*.*.token',
+  'LINE_CHANNEL_SECRET',
+  '*.LINE_CHANNEL_SECRET',
+  '*.*.LINE_CHANNEL_SECRET',
+  'LINE_CHANNEL_ACCESS_TOKEN',
+  '*.LINE_CHANNEL_ACCESS_TOKEN',
+  '*.*.LINE_CHANNEL_ACCESS_TOKEN',
+  'lineChannelSecret',
+  '*.lineChannelSecret',
+  '*.*.lineChannelSecret',
+  'lineChannelAccessToken',
+  '*.lineChannelAccessToken',
+  '*.*.lineChannelAccessToken',
+  'accessToken',
+  '*.accessToken',
+  'refreshToken',
+  '*.refreshToken',
+  'apiKey',
+  '*.apiKey',
+  'api_key',
+  '*.api_key',
+  'DATABASE_URL',
+  '*.DATABASE_URL',
+  'REDIS_PASSWORD',
+  '*.REDIS_PASSWORD',
+  'POSTGRES_PASSWORD',
+  '*.POSTGRES_PASSWORD',
+];
+
+export const defaultLoggerOptions: LoggerOptions = {
   level: process.env.LOG_LEVEL || (process.env.NODE_ENV === 'test' ? 'silent' : 'info'),
   redact: {
-    paths: [
-      'req.headers.authorization',
-      'headers.authorization',
-      'password',
-      'token',
-      'secret',
-      'LINE_CHANNEL_SECRET',
-      'LINE_CHANNEL_ACCESS_TOKEN',
-      '*.password',
-      '*.secret',
-      '*.token',
-    ],
+    paths: defaultRedactPaths,
     remove: true,
   },
   timestamp: pino.stdTimeFunctions.isoTime,
@@ -69,8 +103,28 @@ const defaultOptions: LoggerOptions = {
   },
 };
 
+/**
+ * Creates a Pino logger instance with correlation ID support and sensitive data redaction.
+ */
+export function createLogger(
+  options?: LoggerOptions,
+  destination?: pino.DestinationStream
+): Logger {
+  const mergedOptions: LoggerOptions = {
+    ...defaultLoggerOptions,
+    ...options,
+    redact: options?.redact ?? defaultLoggerOptions.redact,
+    formatters: {
+      ...defaultLoggerOptions.formatters,
+      ...options?.formatters,
+    },
+  };
+
+  return destination ? pino(mergedOptions, destination) : pino(mergedOptions);
+}
+
 // Base Pino logger instance
-export const baseLogger: Logger = pino(defaultOptions);
+export const baseLogger: Logger = createLogger();
 
 /**
  * Returns a child logger with specified bindings, inheriting or overriding correlationId.
@@ -81,3 +135,4 @@ export function createChildLogger(bindings: Record<string, unknown>): Logger {
 
 // Default exported logger
 export const logger = baseLogger;
+

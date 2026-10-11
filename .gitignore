@@ -9,9 +9,14 @@ build/
 
 # Environment files
 .env
-.env.local
-.env.*.local
+.env.*
 !.env.example
+
+# Database backups & dumps
+backups/
+*.sql
+*.dump
+*.gz
 
 # Logs
 logs/
@@ -30,3 +35,4 @@ coverage/
 .idea/
 .DS_Store
 Thumbs.db
+

@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { validateEnv } from './env';
+import { env, getEnv, resetEnvForTesting, validateEnv } from './env';
 
 describe('Environment Configuration (env.ts)', () => {
   const validBaseEnv = {
@@ -100,4 +100,20 @@ describe('Environment Configuration (env.ts)', () => {
       /RATE_LIMIT_USER_MESSAGES_MAX/
     );
   });
+
+  it('should support resetEnvForTesting and lazy proxy property access', () => {
+    resetEnvForTesting(null);
+    const mockConfig = validateEnv(validBaseEnv);
+    resetEnvForTesting(mockConfig);
+
+    expect(getEnv().PORT).toBe(3000);
+    expect(env.PORT).toBe(3000);
+    expect(env.LINE_CHANNEL_SECRET).toBe('test_secret_1234567890');
+    expect('PORT' in env).toBe(true);
+    expect(Object.keys(env)).toContain('PORT');
+
+    // Clean up reset
+    resetEnvForTesting(null);
+  });
 });
+

@@ -2,6 +2,8 @@ import { describe, it, expect } from 'vitest';
 import {
   logger,
   baseLogger,
+  createLogger,
+  defaultRedactPaths,
   runWithCorrelationContext,
   getCorrelationId,
   getLogContext,
@@ -54,4 +56,75 @@ describe('Structured Logger (logger.ts)', () => {
     expect(typeof child.info).toBe('function');
     expect(typeof child.error).toBe('function');
   });
+
+  it('should inject correlationId into actual serialized log output', async () => {
+    const logs: string[] = [];
+    const stream = {
+      write(chunk: string) {
+        logs.push(chunk);
+        return true;
+      },
+    };
+
+    const testLogger = createLogger({ level: 'info' }, stream as any);
+
+    await runWithCorrelationContext({ correlationId: 'test-corr-999', userId: 'user-dnd' }, async () => {
+      testLogger.info({ action: 'roll_dice', sides: 20 }, 'Dice rolled');
+    });
+
+    expect(logs.length).toBe(1);
+    const parsed = JSON.parse(logs[0]);
+    expect(parsed.correlationId).toBe('test-corr-999');
+    expect(parsed.userId).toBe('user-dnd');
+    expect(parsed.action).toBe('roll_dice');
+    expect(parsed.sides).toBe(20);
+    expect(parsed.msg).toBe('Dice rolled');
+  });
+
+  it('should redact sensitive credentials and tokens from log output', () => {
+    const logs: string[] = [];
+    const stream = {
+      write(chunk: string) {
+        logs.push(chunk);
+        return true;
+      },
+    };
+
+    const testLogger = createLogger({ level: 'info' }, stream as any);
+
+    testLogger.info(
+      {
+        authorization: 'Bearer line_secret_token_123',
+        password: 'db_password_456',
+        token: 'auth_token_789',
+        LINE_CHANNEL_SECRET: 'line_channel_secret_val',
+        lineChannelSecret: 'line_camel_secret_val',
+        nested: {
+          authorization: 'Bearer nested_auth',
+          password: 'nested_pass',
+          DATABASE_URL: 'postgres://postgres:pass@localhost:5432/dndchat',
+        },
+        publicField: 'safe_to_log',
+      },
+      'Sensitives test'
+    );
+
+    expect(logs.length).toBe(1);
+    const parsed = JSON.parse(logs[0]);
+
+    // Redacted fields should be removed
+    expect(parsed.authorization).toBeUndefined();
+    expect(parsed.password).toBeUndefined();
+    expect(parsed.token).toBeUndefined();
+    expect(parsed.LINE_CHANNEL_SECRET).toBeUndefined();
+    expect(parsed.lineChannelSecret).toBeUndefined();
+    expect(parsed.nested.authorization).toBeUndefined();
+    expect(parsed.nested.password).toBeUndefined();
+    expect(parsed.nested.DATABASE_URL).toBeUndefined();
+
+    // Public fields should remain
+    expect(parsed.publicField).toBe('safe_to_log');
+    expect(parsed.msg).toBe('Sensitives test');
+  });
 });
+

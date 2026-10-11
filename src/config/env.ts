@@ -80,5 +80,44 @@ export function validateEnv(rawEnv: Record<string, unknown> = process.env): Env 
   return result.data;
 }
 
-// Global parsed env instance
-export const env = validateEnv(process.env);
+export { envSchema };
+
+let cachedEnv: Env | null = null;
+
+/**
+ * Returns the validated environment configuration singleton.
+ * Validates process.env on first call and caches the result.
+ */
+export function getEnv(): Env {
+  if (!cachedEnv) {
+    cachedEnv = validateEnv(process.env);
+  }
+  return cachedEnv;
+}
+
+/**
+ * Resets or overrides the cached environment configuration for testing.
+ */
+export function resetEnvForTesting(mockEnv: Env | null = null): void {
+  cachedEnv = mockEnv;
+}
+
+/**
+ * Global parsed env instance accessed lazily via Proxy.
+ * Prevents premature validation errors at import time during testing.
+ */
+export const env: Env = new Proxy({} as Env, {
+  get(_target, prop: string | symbol) {
+    return (getEnv() as unknown as Record<string | symbol, unknown>)[prop];
+  },
+  has(_target, prop: string | symbol) {
+    return prop in getEnv();
+  },
+  ownKeys() {
+    return Reflect.ownKeys(getEnv());
+  },
+  getOwnPropertyDescriptor(_target, prop: string | symbol) {
+    return Reflect.getOwnPropertyDescriptor(getEnv(), prop);
+  },
+});
+

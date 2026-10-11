@@ -9,6 +9,8 @@
 *.yml text eol=lf
 *.yaml text eol=lf
 *.toml text eol=lf
+*.sh text eol=lf
 *.env.example text eol=lf
 .gitignore text eol=lf
 .gitattributes text eol=lf
+.gitleaksignore text eol=lf

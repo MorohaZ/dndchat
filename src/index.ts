@@ -1,5 +1,5 @@
 import { getEnv, validateEnv, loadDotenv, env } from './config/env';
-import { logger, sanitizeError } from './observability/logger';
+import { logger, sanitizeError, sanitizeErrorMessage } from './observability/logger';
 
 export { env, getEnv, validateEnv } from './config/env';
 export { logger } from './observability/logger';
@@ -15,8 +15,9 @@ export async function bootstrap() {
     validatedConfig = getEnv();
   } catch (err: unknown) {
     // Print sanitized error without secrets to stderr and terminate with exit code 1
-    const message = err instanceof Error ? err.message : String(err);
-    console.error(`[FATAL] Startup configuration validation failed:\n${message}`);
+    const rawMessage = err instanceof Error ? err.message : String(err);
+    const sanitized = sanitizeErrorMessage(rawMessage);
+    console.error(`[FATAL] Startup configuration validation failed:\n${sanitized}`);
     process.exit(1);
   }
 

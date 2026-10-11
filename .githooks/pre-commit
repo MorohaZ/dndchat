@@ -4,9 +4,12 @@
 
 if command -v gitleaks >/dev/null 2>&1; then
   echo "==> Running gitleaks pre-commit check..."
-  # Gitleaks v8+ uses 'protect --staged'
+  # Gitleaks v8+ uses 'protect --staged', older/alternative builds use 'git --staged' or 'detect --staged'
   if gitleaks protect --help >/dev/null 2>&1; then
     gitleaks protect --staged --verbose --redact
+    EXIT_CODE=$?
+  elif gitleaks git --help >/dev/null 2>&1; then
+    gitleaks git --staged --verbose --redact
     EXIT_CODE=$?
   else
     # Fallback for alternative gitleaks CLI signatures

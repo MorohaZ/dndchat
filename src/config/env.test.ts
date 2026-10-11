@@ -68,7 +68,35 @@ describe('Environment Configuration Hardening (env.ts)', () => {
         NODE_ENV: 'production',
         DATABASE_URL: 'postgres://postgres:postgres@localhost:5432/dndchat',
       })
-    ).toThrowError(/Default development credentials cannot be used in production/);
+    ).toThrowError(/Default development credentials or loopback database cannot be used in production/);
+
+    // Production with default 127.0.0.1 credentials must fail
+    expect(() =>
+      validateEnv({
+        ...validBaseEnv,
+        NODE_ENV: 'production',
+        DATABASE_URL: 'postgres://postgres:postgres@127.0.0.1:5432/dndchat',
+      })
+    ).toThrowError(/Default development credentials or loopback database cannot be used in production/);
+
+    // Production with default REDIS_URL must fail
+    expect(() =>
+      validateEnv({
+        ...validBaseEnv,
+        NODE_ENV: 'production',
+        DATABASE_URL: 'postgres://dnd_prod:DUMMY_PROD_PW@db.internal:5432/dnd_prod',
+        REDIS_URL: 'redis://localhost:6379',
+      })
+    ).toThrowError(/Default development REDIS_URL cannot be used in production/);
+
+    expect(() =>
+      validateEnv({
+        ...validBaseEnv,
+        NODE_ENV: 'production',
+        DATABASE_URL: 'postgres://dnd_prod:DUMMY_PROD_PW@db.internal:5432/dnd_prod',
+        REDIS_URL: 'redis://127.0.0.1:6379',
+      })
+    ).toThrowError(/Default development REDIS_URL cannot be used in production/);
 
     // Production without DATABASE_URL must fail
     const { DATABASE_URL: _omittedDb, ...noDbEnv } = validBaseEnv;
@@ -90,6 +118,22 @@ describe('Environment Configuration Hardening (env.ts)', () => {
     expect(prodConfig.DATABASE_URL).toBe(
       'postgres://dnd_prod:DUMMY_PROD_PW@db.internal:5432/dnd_prod'
     );
+    expect(prodConfig.REDIS_URL).toBe('redis://cache.internal:6379');
+  });
+
+  it('should fall back to safe defaults when DATABASE_URL or REDIS_URL are empty strings in test/dev', () => {
+    const config = validateEnv({
+      ...validBaseEnv,
+      DATABASE_URL: '',
+      REDIS_URL: '',
+    });
+    expect(config.DATABASE_URL).toBe('postgres://postgres:postgres@localhost:5432/dndchat');
+    expect(config.REDIS_URL).toBe('redis://localhost:6379');
+  });
+
+  it('should throw with descriptive errors when required variables are completely missing', () => {
+    expect(() => validateEnv({})).toThrowError(/LINE_CHANNEL_SECRET/);
+    expect(() => validateEnv({})).toThrowError(/LINE_CHANNEL_ACCESS_TOKEN/);
   });
 
   it('should throw when LINE_CHANNEL_SECRET is missing, too short, or has whitespace', () => {

@@ -31,6 +31,19 @@ describe('Application Bootstrap Fail-Fast (index.ts)', () => {
     expect(errorOutput).toContain('LINE_CHANNEL_SECRET');
   });
 
+  it('should sanitize credentials from startup error before printing to stderr', async () => {
+    vi.spyOn(envModule, 'getEnv').mockImplementation(() => {
+      throw new Error('Failed to connect to postgres://app_user:SUPER_SECRET_LEAK@localhost:5432/dnd');
+    });
+
+    await expect(bootstrap()).rejects.toThrow('PROCESS_EXIT_CALLED');
+
+    expect(exitSpy).toHaveBeenCalledWith(1);
+    const errorOutput = consoleErrorSpy.mock.calls[0].join(' ');
+    expect(errorOutput).not.toContain('SUPER_SECRET_LEAK');
+    expect(errorOutput).toContain('postgres://app_user:***@localhost:5432/dnd');
+  });
+
   it('should initialize and return config successfully when env is valid', async () => {
     const mockEnv = {
       NODE_ENV: 'test' as const,

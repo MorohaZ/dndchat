@@ -189,7 +189,7 @@ describe('Structured Logger Hardening (logger.ts)', () => {
     expect(resolveLogLevel('invalid_level_xyz')).toBe('silent'); // test env default
   });
 
-  it('should sanitize webhook event to prevent logging raw chat messages or PII', () => {
+  it('should sanitize webhook event to prevent logging raw chat messages or PII', async () => {
     const rawWebhookEvent = {
       type: 'message',
       mode: 'active',
@@ -224,5 +224,54 @@ describe('Structured Logger Hardening (logger.ts)', () => {
     expect((safeLogData as any).text).toBeUndefined();
     expect((safeLogData as any).replyToken).toBeUndefined();
     expect(JSON.stringify(safeLogData)).not.toContain('John Doe');
+
+    // Verify correlationId propagation from AsyncLocalStorage and explicit field
+    await runWithCorrelationContext({ correlationId: 'webhook-corr-123' }, async () => {
+      const logWithCtx = sanitizeWebhookEventForLog(rawWebhookEvent);
+      expect(logWithCtx.correlationId).toBe('webhook-corr-123');
+
+      const logWithExplicit = sanitizeWebhookEventForLog({
+        ...rawWebhookEvent,
+        correlationId: 'override-corr-456',
+      });
+      expect(logWithExplicit.correlationId).toBe('override-corr-456');
+    });
+
+    // Guard against null/invalid event object
+    expect(sanitizeWebhookEventForLog(null as any).eventType).toBe('unknown');
+    expect(sanitizeWebhookEventForLog(undefined as any).eventType).toBe('unknown');
+  });
+
+  it('should sanitize Redis AUTH commands in error messages', () => {
+    const redisAuthError = 'ERR [ioredis] Command failed: AUTH super_secret_redis_pass_999';
+    const sanitized = sanitizeErrorMessage(redisAuthError);
+    expect(sanitized).not.toContain('super_secret_redis_pass_999');
+    expect(sanitized).toBe('ERR [ioredis] Command failed: AUTH ***');
+  });
+
+  it('should preserve error code and custom properties in serializers while sanitizing credentials', () => {
+    const logs: string[] = [];
+    const stream = {
+      write(chunk: string) {
+        logs.push(chunk);
+        return true;
+      },
+    };
+
+    const testLogger = createLogger({ level: 'info' }, stream as any);
+
+    const dbError: any = new Error('Connection failed to postgres://user:SECRET_PASS@localhost:5432/db');
+    dbError.code = '28P01';
+    dbError.syscall = 'connect';
+
+    testLogger.error({ err: dbError }, 'Database connection error occurred');
+
+    expect(logs.length).toBe(1);
+    const parsed = JSON.parse(logs[0]);
+    expect(parsed.err.code).toBe('28P01');
+    expect(parsed.err.syscall).toBe('connect');
+    expect(parsed.err.message).not.toContain('SECRET_PASS');
+    expect(parsed.err.message).toContain('***@localhost');
   });
 });
+

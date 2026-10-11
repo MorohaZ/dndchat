@@ -32,16 +32,16 @@ const baseSchema = z.object({
     .default('info'),
 
   // PostgreSQL connection URL (Single Source of Truth)
-  DATABASE_URL: z
-    .string()
-    .url('DATABASE_URL must be a valid URL')
-    .optional(),
+  DATABASE_URL: z.preprocess(
+    (val) => (typeof val === 'string' && val.trim() === '' ? undefined : val),
+    z.string().url('DATABASE_URL must be a valid URL').optional()
+  ),
 
   // Redis connection URL (Single Source of Truth)
-  REDIS_URL: z
-    .string()
-    .url('REDIS_URL must be a valid URL')
-    .optional(),
+  REDIS_URL: z.preprocess(
+    (val) => (typeof val === 'string' && val.trim() === '' ? undefined : val),
+    z.string().url('REDIS_URL must be a valid URL').optional()
+  ),
   REDIS_PASSWORD: z
     .string()
     .optional()
@@ -162,11 +162,16 @@ export const envSchema = baseSchema
           path: ['DATABASE_URL'],
           message: 'DATABASE_URL is required in production environment',
         });
-      } else if (data.DATABASE_URL.includes('postgres:postgres@localhost')) {
+      } else if (
+        data.DATABASE_URL.includes('postgres:postgres@') ||
+        data.DATABASE_URL.includes('@localhost') ||
+        data.DATABASE_URL.includes('@127.0.0.1')
+      ) {
         ctx.addIssue({
           code: z.ZodIssueCode.custom,
           path: ['DATABASE_URL'],
-          message: 'Default development credentials cannot be used in production',
+          message:
+            'Default development credentials or loopback database cannot be used in production',
         });
       }
 
@@ -175,6 +180,16 @@ export const envSchema = baseSchema
           code: z.ZodIssueCode.custom,
           path: ['REDIS_URL'],
           message: 'REDIS_URL is required in production environment',
+        });
+      } else if (
+        data.REDIS_URL === 'redis://localhost:6379' ||
+        data.REDIS_URL === 'redis://127.0.0.1:6379'
+      ) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ['REDIS_URL'],
+          message:
+            'Default development REDIS_URL cannot be used in production',
         });
       }
     }
@@ -238,6 +253,7 @@ export function getEnv(): Env {
 
 export function resetEnvForTesting(mockEnv: Env | null = null): void {
   cachedEnv = mockEnv;
+  dotenvLoaded = false;
 }
 
 export const env: Env = new Proxy({} as Env, {

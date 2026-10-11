@@ -50,8 +50,12 @@ export const defaultRedactPaths = [
   '*.*.cookie',
   'headers.cookie',
   '*.headers.cookie',
+  'headers["cookie"]',
+  '*.headers["cookie"]',
   'req.headers.cookie',
   '*.req.headers.cookie',
+  'req.headers["cookie"]',
+  '*.req.headers["cookie"]',
 
   'set-cookie',
   '*.set-cookie',
@@ -60,6 +64,10 @@ export const defaultRedactPaths = [
   '*.headers["set-cookie"]',
   'headers.set-cookie',
   '*.headers.set-cookie',
+  'req.headers["set-cookie"]',
+  '*.req.headers["set-cookie"]',
+  'res.headers["set-cookie"]',
+  '*.res.headers["set-cookie"]',
 
   // LINE Signatures & Tokens
   'x-line-signature',
@@ -165,12 +173,16 @@ export function resolveLogLevel(rawLevel?: string): ValidLogLevel {
 
 const CONNECTION_STRING_PASSWORD_REGEX =
   /((?:postgres|postgresql|redis|rediss):\/\/[^@\s/]*:)([^@\s]+)(@)/gi;
+const REDIS_AUTH_COMMAND_REGEX =
+  /\b(AUTH\s+)(['"]?[^\s'"]+['"]?)/gi;
 
 /**
- * Strips embedded passwords from connection string URLs in error messages.
+ * Strips embedded passwords from connection string URLs and Redis AUTH commands in error messages.
  */
 export function sanitizeErrorMessage(message: string): string {
-  return message.replace(CONNECTION_STRING_PASSWORD_REGEX, '$1***$3');
+  return message
+    .replace(CONNECTION_STRING_PASSWORD_REGEX, '$1***$3')
+    .replace(REDIS_AUTH_COMMAND_REGEX, '$1***');
 }
 
 /**
@@ -211,6 +223,13 @@ export interface SafeWebhookEventLog {
 export function sanitizeWebhookEventForLog(
   event: Record<string, any>
 ): SafeWebhookEventLog {
+  if (!event || typeof event !== 'object') {
+    return {
+      eventType: 'unknown',
+      correlationId: getCorrelationId(),
+    };
+  }
+
   return {
     eventId: event.webhookEventId ?? event.deliveryContext?.deliveryId,
     eventType: String(event.type ?? 'unknown'),
@@ -219,9 +238,22 @@ export function sanitizeWebhookEventForLog(
       typeof event.message?.text === 'string'
         ? event.message.text.length
         : undefined,
+    correlationId: event.correlationId ?? getCorrelationId(),
     sourceType: event.source?.type,
   };
 }
+
+const serializeSanitizedError = (err: unknown) => {
+  if (err instanceof Error) {
+    const std = pino.stdSerializers.err(err);
+    return {
+      ...std,
+      message: sanitizeErrorMessage(std.message),
+      stack: std.stack ? sanitizeErrorMessage(std.stack) : undefined,
+    };
+  }
+  return err;
+};
 
 export const defaultLoggerOptions: LoggerOptions = {
   level: resolveLogLevel(process.env.LOG_LEVEL),
@@ -231,16 +263,8 @@ export const defaultLoggerOptions: LoggerOptions = {
   },
   timestamp: pino.stdTimeFunctions.isoTime,
   serializers: {
-    err: (err: unknown) => {
-      if (err instanceof Error) {
-        return {
-          type: err.name,
-          message: sanitizeErrorMessage(err.message),
-          stack: err.stack ? sanitizeErrorMessage(err.stack) : undefined,
-        };
-      }
-      return err;
-    },
+    err: serializeSanitizedError,
+    error: serializeSanitizedError,
   },
   formatters: {
     level(label) {

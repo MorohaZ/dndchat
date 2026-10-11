@@ -1,0 +1,32 @@
+#!/usr/bin/env sh
+# Pre-commit hook to scan staged changes for secrets with gitleaks
+# To enable this hook in this repo: git config core.hooksPath .githooks
+
+if command -v gitleaks >/dev/null 2>&1; then
+  echo "==> Running gitleaks pre-commit check..."
+  # Gitleaks v8+ uses 'protect --staged'
+  if gitleaks protect --help >/dev/null 2>&1; then
+    gitleaks protect --staged --verbose --redact
+    EXIT_CODE=$?
+  else
+    # Fallback for alternative gitleaks CLI signatures
+    gitleaks detect --staged --verbose --redact
+    EXIT_CODE=$?
+  fi
+
+  if [ $EXIT_CODE -ne 0 ]; then
+    echo "ERROR: gitleaks found potential secrets in your staged changes."
+    echo "Please remove secrets before committing, or update .gitleaks.toml allowlist if verified false positive."
+    exit 1
+  fi
+  echo "==> Gitleaks scan passed."
+else
+  echo "WARNING: gitleaks is not installed or not in PATH."
+  echo "Installation instructions:"
+  echo "  - Windows (winget): winget install Gitleaks.Gitleaks"
+  echo "  - Windows (scoop): scoop install gitleaks"
+  echo "  - Windows (choco): choco install gitleaks"
+  echo "  - macOS (brew): brew install gitleaks"
+  echo "  - Go: go install github.com/zricethezav/gitleaks/v8@latest"
+  echo "Skipping local pre-commit secret scan. CI will enforce secret scanning."
+fi

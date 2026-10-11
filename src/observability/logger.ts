@@ -13,23 +13,14 @@ export interface LogContext {
 // AsyncLocalStorage to maintain correlation ID across async hops
 export const logContextStorage = new AsyncLocalStorage<LogContext>();
 
-/**
- * Gets the current log context from AsyncLocalStorage.
- */
 export function getLogContext(): LogContext | undefined {
   return logContextStorage.getStore();
 }
 
-/**
- * Gets current correlation ID if set.
- */
 export function getCorrelationId(): string | undefined {
   return logContextStorage.getStore()?.correlationId;
 }
 
-/**
- * Runs an asynchronous callback with the given correlation context.
- */
 export function runWithCorrelationContext<T>(
   context: LogContext,
   fn: () => T | Promise<T>
@@ -37,7 +28,15 @@ export function runWithCorrelationContext<T>(
   return logContextStorage.run(context, fn);
 }
 
+/**
+ * Pino fast-redact limitation note:
+ * Pino's underlying fast-redact engine does NOT support arbitrary recursive wildcards (e.g. '**').
+ * Each wildcard '*' matches exactly one path segment depth.
+ * Therefore, paths are specified up to 3 levels deep. Any deeply nested or dynamic structures
+ * must be pre-sanitized before logging.
+ */
 export const defaultRedactPaths = [
+  // HTTP Auth & Cookies
   'authorization',
   '*.authorization',
   '*.*.authorization',
@@ -45,6 +44,63 @@ export const defaultRedactPaths = [
   '*.headers.authorization',
   'req.headers.authorization',
   '*.req.headers.authorization',
+
+  'cookie',
+  '*.cookie',
+  '*.*.cookie',
+  'headers.cookie',
+  '*.headers.cookie',
+  'req.headers.cookie',
+  '*.req.headers.cookie',
+
+  'set-cookie',
+  '*.set-cookie',
+  '*.*.set-cookie',
+  'headers["set-cookie"]',
+  '*.headers["set-cookie"]',
+  'headers.set-cookie',
+  '*.headers.set-cookie',
+
+  // LINE Signatures & Tokens
+  'x-line-signature',
+  '*.x-line-signature',
+  '*.*.x-line-signature',
+  'headers["x-line-signature"]',
+  '*.headers["x-line-signature"]',
+  'headers.x-line-signature',
+  '*.headers.x-line-signature',
+  'req.headers["x-line-signature"]',
+  '*.req.headers["x-line-signature"]',
+
+  'replyToken',
+  '*.replyToken',
+  '*.*.replyToken',
+
+  'idToken',
+  '*.idToken',
+  '*.*.idToken',
+
+  'channelSecret',
+  '*.channelSecret',
+  '*.*.channelSecret',
+
+  'LINE_CHANNEL_SECRET',
+  '*.LINE_CHANNEL_SECRET',
+  '*.*.LINE_CHANNEL_SECRET',
+
+  'LINE_CHANNEL_ACCESS_TOKEN',
+  '*.LINE_CHANNEL_ACCESS_TOKEN',
+  '*.*.LINE_CHANNEL_ACCESS_TOKEN',
+
+  'lineChannelSecret',
+  '*.lineChannelSecret',
+  '*.*.lineChannelSecret',
+
+  'lineChannelAccessToken',
+  '*.lineChannelAccessToken',
+  '*.*.lineChannelAccessToken',
+
+  // General Passwords, Keys, and Secrets
   'password',
   '*.password',
   '*.*.password',
@@ -54,41 +110,138 @@ export const defaultRedactPaths = [
   'token',
   '*.token',
   '*.*.token',
-  'LINE_CHANNEL_SECRET',
-  '*.LINE_CHANNEL_SECRET',
-  '*.*.LINE_CHANNEL_SECRET',
-  'LINE_CHANNEL_ACCESS_TOKEN',
-  '*.LINE_CHANNEL_ACCESS_TOKEN',
-  '*.*.LINE_CHANNEL_ACCESS_TOKEN',
-  'lineChannelSecret',
-  '*.lineChannelSecret',
-  '*.*.lineChannelSecret',
-  'lineChannelAccessToken',
-  '*.lineChannelAccessToken',
-  '*.*.lineChannelAccessToken',
   'accessToken',
   '*.accessToken',
+  '*.*.accessToken',
   'refreshToken',
   '*.refreshToken',
+  '*.*.refreshToken',
   'apiKey',
   '*.apiKey',
+  '*.*.apiKey',
   'api_key',
   '*.api_key',
+  '*.*.api_key',
+
+  // Database & Redis URLs / Credentials
   'DATABASE_URL',
   '*.DATABASE_URL',
+  '*.*.DATABASE_URL',
   'REDIS_PASSWORD',
   '*.REDIS_PASSWORD',
+  '*.*.REDIS_PASSWORD',
+  'REDIS_URL',
+  '*.REDIS_URL',
+  '*.*.REDIS_URL',
   'POSTGRES_PASSWORD',
   '*.POSTGRES_PASSWORD',
+  '*.*.POSTGRES_PASSWORD',
 ];
 
+export const ALLOWED_LOG_LEVELS = [
+  'fatal',
+  'error',
+  'warn',
+  'info',
+  'debug',
+  'trace',
+  'silent',
+] as const;
+
+export type ValidLogLevel = (typeof ALLOWED_LOG_LEVELS)[number];
+
+/**
+ * Validates and resolves log level without importing env module (avoids circular dependency).
+ */
+export function resolveLogLevel(rawLevel?: string): ValidLogLevel {
+  if (
+    rawLevel &&
+    (ALLOWED_LOG_LEVELS as readonly string[]).includes(rawLevel.toLowerCase())
+  ) {
+    return rawLevel.toLowerCase() as ValidLogLevel;
+  }
+  return process.env.NODE_ENV === 'test' ? 'silent' : 'info';
+}
+
+const CONNECTION_STRING_PASSWORD_REGEX =
+  /((?:postgres|postgresql|redis|rediss):\/\/[^@\s/]*:)([^@\s]+)(@)/gi;
+
+/**
+ * Strips embedded passwords from connection string URLs in error messages.
+ */
+export function sanitizeErrorMessage(message: string): string {
+  return message.replace(CONNECTION_STRING_PASSWORD_REGEX, '$1***$3');
+}
+
+/**
+ * Sanitizes an error object or string, removing sensitive connection credentials.
+ */
+export function sanitizeError(err: unknown): unknown {
+  if (err instanceof Error) {
+    const cleanMsg = sanitizeErrorMessage(err.message);
+    const cleanStack = err.stack
+      ? sanitizeErrorMessage(err.stack)
+      : undefined;
+    const sanitized = new Error(cleanMsg);
+    sanitized.name = err.name;
+    if (cleanStack) {
+      sanitized.stack = cleanStack;
+    }
+    return sanitized;
+  }
+  if (typeof err === 'string') {
+    return sanitizeErrorMessage(err);
+  }
+  return err;
+}
+
+/**
+ * Safe metadata format for LINE webhook events (PDPA compliance).
+ * Raw chat texts and raw webhook payloads must never be logged.
+ */
+export interface SafeWebhookEventLog {
+  eventId?: string;
+  eventType: string;
+  messageType?: string;
+  messageLength?: number;
+  correlationId?: string;
+  sourceType?: string;
+}
+
+export function sanitizeWebhookEventForLog(
+  event: Record<string, any>
+): SafeWebhookEventLog {
+  return {
+    eventId: event.webhookEventId ?? event.deliveryContext?.deliveryId,
+    eventType: String(event.type ?? 'unknown'),
+    messageType: event.message?.type,
+    messageLength:
+      typeof event.message?.text === 'string'
+        ? event.message.text.length
+        : undefined,
+    sourceType: event.source?.type,
+  };
+}
+
 export const defaultLoggerOptions: LoggerOptions = {
-  level: process.env.LOG_LEVEL || (process.env.NODE_ENV === 'test' ? 'silent' : 'info'),
+  level: resolveLogLevel(process.env.LOG_LEVEL),
   redact: {
     paths: defaultRedactPaths,
     remove: true,
   },
   timestamp: pino.stdTimeFunctions.isoTime,
+  serializers: {
+    err: (err: unknown) => {
+      if (err instanceof Error) {
+        return {
+          type: err.name,
+          message: sanitizeErrorMessage(err.message),
+          stack: err.stack ? sanitizeErrorMessage(err.stack) : undefined,
+        };
+      }
+      return err;
+    },
+  },
   formatters: {
     level(label) {
       return { level: label };
@@ -96,16 +249,14 @@ export const defaultLoggerOptions: LoggerOptions = {
     log(object) {
       const store = logContextStorage.getStore();
       if (store) {
-        return { ...store, ...object };
+        // Enforce context precedence: context fields override caller-supplied object properties
+        return { ...object, ...store };
       }
       return object;
     },
   },
 };
 
-/**
- * Creates a Pino logger instance with correlation ID support and sensitive data redaction.
- */
 export function createLogger(
   options?: LoggerOptions,
   destination?: pino.DestinationStream
@@ -113,7 +264,12 @@ export function createLogger(
   const mergedOptions: LoggerOptions = {
     ...defaultLoggerOptions,
     ...options,
+    level: options?.level ?? defaultLoggerOptions.level,
     redact: options?.redact ?? defaultLoggerOptions.redact,
+    serializers: {
+      ...defaultLoggerOptions.serializers,
+      ...options?.serializers,
+    },
     formatters: {
       ...defaultLoggerOptions.formatters,
       ...options?.formatters,
@@ -123,16 +279,10 @@ export function createLogger(
   return destination ? pino(mergedOptions, destination) : pino(mergedOptions);
 }
 
-// Base Pino logger instance
 export const baseLogger: Logger = createLogger();
 
-/**
- * Returns a child logger with specified bindings, inheriting or overriding correlationId.
- */
 export function createChildLogger(bindings: Record<string, unknown>): Logger {
   return baseLogger.child(bindings);
 }
 
-// Default exported logger
 export const logger = baseLogger;
-

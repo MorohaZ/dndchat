@@ -1,0 +1,14 @@
+# Gitleaks configuration
+# Target specific false positives in test mock data without disabling project-wide secret scanning.
+# Documentation: https://github.com/gitleaks/gitleaks
+
+[allowlist]
+description = "Allowlist test files and mock secret fixtures used strictly for automated tests"
+paths = [
+  '''src/config/env\.test\.ts''',
+  '''src/observability/logger\.test\.ts'''
+]
+regexes = [
+  '''(?i)FAKE_[A-Z0-9_]+''',
+  '''(?i)DUMMY_[A-Z0-9_]+'''
+]

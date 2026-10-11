@@ -1,0 +1,3 @@
+# Gitleaks ignore file
+# Used to ignore specific fingerprint findings from gitleaks (v8+)
+# Lines starting with # are comments.

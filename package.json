@@ -9,7 +9,10 @@
     "dev": "tsx watch src/index.ts",
     "test": "vitest run",
     "test:watch": "vitest",
-    "audit": "npm audit --audit-level=high"
+    "audit": "npm audit --audit-level=high",
+    "security:audit": "npm audit --audit-level=high",
+    "security:gitleaks": "gitleaks detect --verbose --redact",
+    "security:check": "npm run security:audit"
   },
   "keywords": [
     "dnd",
@@ -24,7 +27,6 @@
     "dotenv": "^16.4.7",
     "fastify": "^5.12.5",
     "ioredis": "^5.5.0",
-    "jstat": "^1.9.6",
     "kysely": "^0.29.6",
     "pg": "^8.13.3",
     "pino": "^9.6.0",
@@ -33,6 +35,7 @@
   "devDependencies": {
     "@types/node": "^22.13.1",
     "@types/pg": "^8.11.11",
+    "jstat": "^1.9.6",
     "pino-pretty": "^13.0.0",
     "tsx": "^4.19.2",
     "typescript": "^5.7.3",

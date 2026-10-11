@@ -1,3 +1,4 @@
+/// <reference path="./benchmark/jstat.d.ts" />
 import { jStat } from 'jstat';
 
 /**

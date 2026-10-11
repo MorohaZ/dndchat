@@ -3,6 +3,8 @@ import { logger, sanitizeError, sanitizeErrorMessage } from './observability/log
 
 export { env, getEnv, validateEnv } from './config/env';
 export { logger } from './observability/logger';
+export * from './core/dice';
+export * from './core/rules';
 
 /**
  * Bootstrap the application.

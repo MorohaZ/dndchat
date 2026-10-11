@@ -35,12 +35,13 @@ export interface Token {
   readonly pos: number;
 }
 
-const VALID_FACES = new Set([4, 6, 8, 10, 12, 20, 100]);
-const MAX_EXPRESSION_LENGTH = 60;
-const MIN_DICE_COUNT = 1;
-const MAX_DICE_COUNT = 20;
-const MIN_MODIFIER = -30;
-const MAX_MODIFIER = 30;
+export const VALID_FACES = new Set([4, 6, 8, 10, 12, 20, 100]);
+export const MAX_EXPRESSION_LENGTH = 60;
+export const MIN_DICE_COUNT = 1;
+export const MAX_DICE_COUNT = 20;
+export const MIN_MODIFIER = -30;
+export const MAX_MODIFIER = 30;
+export const MAX_NUMBER_DIGITS = 4;
 
 /**
  * Tokenizes the input string using a linear scanner.
@@ -77,6 +78,11 @@ function tokenize(input: string): Token[] {
         i++;
       }
       const numStr = input.slice(start, i);
+      if (numStr.length > MAX_NUMBER_DIGITS) {
+        throw new DiceParseError(
+          `Number "${numStr}" exceeds maximum allowed digits (${MAX_NUMBER_DIGITS}) at position ${start}`
+        );
+      }
       const val = parseInt(numStr, 10);
       tokens.push({ type: 'NUMBER', value: val, pos: start });
       continue;
@@ -108,7 +114,8 @@ function tokenize(input: string): Token[] {
       continue;
     }
 
-    throw new DiceParseError(`Unexpected character "${ch}" at position ${i}`);
+    const char = String.fromCodePoint(input.codePointAt(i)!);
+    throw new DiceParseError(`Unexpected character "${char}" at position ${i}`);
   }
 
   tokens.push({ type: 'EOF', pos: len });
@@ -123,7 +130,7 @@ function tokenize(input: string): Token[] {
  * - XdY+Z, XdY-Z (e.g. 1d20+5, 1d20 - 5)
  * - 1d20 adv +Z, adv 1d20+Z (with or without modifier)
  * - 1d20 dis -Z, dis 1d20-Z (with or without modifier)
- * - 4d6kh3 (drop lowest dice, keep highest 3)
+ * - 4d6kh3 (keep highest 3 dice)
  *
  * Security and semantic bounds:
  * - Length <= 60 characters

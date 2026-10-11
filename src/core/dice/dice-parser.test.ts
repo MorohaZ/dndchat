@@ -112,7 +112,7 @@ describe('DiceParser', () => {
   });
 
   describe('Keep Highest (kh) Notations', () => {
-    it('should parse "4d6kh3" (drop lowest 1)', () => {
+    it('should parse "4d6kh3" (keep highest 3)', () => {
       const res = parseDiceExpression('4d6kh3');
       expect(res.count).toBe(4);
       expect(res.faces).toBe(6);
@@ -290,6 +290,91 @@ describe('DiceParser', () => {
       expect(() => parseDiceExpression('1d20*2')).toThrow(/Unexpected character "\*"/);
       expect(() => parseDiceExpression('1d20 foo')).toThrow(/Unrecognized token "foo"/);
       expect(() => parseDiceExpression('20')).toThrow(/Expected "d" after dice count/);
+    });
+
+    it('should reject numbers exceeding maximum allowed digits (e.g. 99999999999999999999d6)', () => {
+      expect(() => parseDiceExpression('99999999999999999999d6')).toThrow(
+        /exceeds maximum allowed digits \(4\)/
+      );
+      expect(() => parseDiceExpression('1d99999')).toThrow(
+        /exceeds maximum allowed digits \(4\)/
+      );
+      expect(() => parseDiceExpression('1d20+12345')).toThrow(
+        /exceeds maximum allowed digits \(4\)/
+      );
+    });
+
+    it('should handle all dangerous input cases specified in security review', () => {
+      // 1000000d1000000
+      expect(() => parseDiceExpression('1000000d1000000')).toThrowError(
+        'Number "1000000" exceeds maximum allowed digits (4) at position 0'
+      );
+
+      // 21d6
+      expect(() => parseDiceExpression('21d6')).toThrowError(
+        'Dice count must be between 1 and 20 (got 21)'
+      );
+
+      // 1d7
+      expect(() => parseDiceExpression('1d7')).toThrowError(
+        'Invalid die face d7. Valid dice are d4, d6, d8, d10, d12, d20, d100'
+      );
+
+      // 1d20+31
+      expect(() => parseDiceExpression('1d20+31')).toThrowError(
+        'Modifier must be between -30 and +30 (got 31)'
+      );
+
+      // ข้อความยาวเกิน 60
+      const tooLong = '1d20 + 5' + ' '.repeat(53);
+      expect(tooLong.length).toBe(61);
+      expect(() => parseDiceExpression(tooLong)).toThrowError(
+        'Dice expression exceeds maximum length of 60 characters (length: 61)'
+      );
+
+      // สตริงว่าง
+      expect(() => parseDiceExpression('')).toThrowError(
+        'Dice expression cannot be empty'
+      );
+      expect(() => parseDiceExpression('   ')).toThrowError(
+        'Dice expression cannot be empty'
+      );
+
+      // d20 (valid default 1d20)
+      const validD20 = parseDiceExpression('d20');
+      expect(validD20.count).toBe(1);
+      expect(validD20.faces).toBe(20);
+      expect(validD20.modifier).toBe(0);
+
+      // 1d20++5
+      expect(() => parseDiceExpression('1d20++5')).toThrowError(
+        'Expected modifier number after "+" at position 4'
+      );
+
+      // adv adv 1d20
+      expect(() => parseDiceExpression('adv adv 1d20')).toThrowError(
+        'Expected dice notation (e.g., 1d20) at position 4'
+      );
+
+      // kh0
+      expect(() => parseDiceExpression('kh0')).toThrowError(
+        'Expected dice notation (e.g., 1d20) at position 0'
+      );
+
+      // 4d6kh5
+      expect(() => parseDiceExpression('4d6kh5')).toThrowError(
+        'Cannot keep 5 dice when only rolling 4 dice'
+      );
+
+      // emoji
+      expect(() => parseDiceExpression('1d20 🎲')).toThrowError(
+        'Unexpected character "🎲" at position 5'
+      );
+
+      // ตัวเลขยาวมาก
+      expect(() => parseDiceExpression('99999999999999999999d6')).toThrowError(
+        'Number "99999999999999999999" exceeds maximum allowed digits (4) at position 0'
+      );
     });
   });
 });

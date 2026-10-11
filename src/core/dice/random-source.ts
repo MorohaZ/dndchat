@@ -75,6 +75,11 @@ export class FakeRandomSource implements RandomSource {
     }
 
     const val = this.values[this.index++];
+    if (val < min || val > max) {
+      throw new RangeError(
+        `FakeRandomSource: Configured value ${val} is out of requested bounds [${min}, ${max}]`
+      );
+    }
     return val;
   }
 

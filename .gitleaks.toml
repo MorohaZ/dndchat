@@ -3,15 +3,10 @@
 # Documentation: https://github.com/gitleaks/gitleaks
 
 [allowlist]
-description = "Allowlist test files and mock secret fixtures used strictly for automated tests"
+description = "Allowlist test files used strictly for automated tests"
 paths = [
   '''src[/\\]config[/\\]env\.test\.ts''',
   '''src[/\\]observability[/\\]logger\.test\.ts''',
   '''src[/\\]index\.test\.ts'''
-]
-regexes = [
-  '''(?i)FAKE_[A-Z0-9_]+''',
-  '''(?i)DUMMY_[A-Z0-9_]+''',
-  '''test_secret_1234567890'''
 ]
 

@@ -20,6 +20,14 @@ This repository uses [Gitleaks](https://github.com/gitleaks/gitleaks) to detect 
 - **Allowlist Configuration**:
   Allowlisted test mocks are specified strictly in `.gitleaks.toml`. Never allowlist the whole project or ignore real credentials.
 
+#### Git Hook Setup (Repository Hook)
+To enable the pre-commit secret scanning hook located in `.githooks/`:
+```bash
+git config core.hooksPath .githooks
+```
+This points Git hook execution to the version-controlled `.githooks/` directory in the repository.
+If `gitleaks` is not installed on the developer machine, the hook will display a prominent warning banner and instructions rather than silently passing.
+
 ### 2. Dependency Vulnerability Audit
 - Run: `npm run security:audit` (or `npm audit --audit-level=high`)
 
@@ -36,6 +44,7 @@ In GitHub Actions / CI pipeline, run:
 ```
 
 ### 4. PDPA & Logging Rules
-- Never log raw LINE webhook payloads or raw player chat messages.
-- Only log event ID, event type, message length, and correlation ID.
+- **ห้าม log object ทั้งก้อนที่ไม่ผ่าน sanitize**: Never log entire raw or arbitrary objects without explicit pre-sanitization. Pino fast-redact operates at fixed segment depths; nested or dynamic structures can bypass redaction if not sanitized first.
+- **ห้าม log payload webhook หรือข้อความผู้เล่นดิบ**: Never log raw LINE webhook event payloads or raw player chat messages.
+- **โครงสร้าง log ที่ปลอดภัย**: Only log sanitized metadata: event ID, event type, message length, and correlation ID (via `sanitizeWebhookEventForLog`).
 - All secrets, tokens, authorization headers, and database connection passwords must be redacted or sanitized prior to logging.

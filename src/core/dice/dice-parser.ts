@@ -53,8 +53,8 @@ function tokenize(input: string): Token[] {
   while (i < len) {
     const ch = input[i];
 
-    // Skip whitespace
-    if (ch === ' ' || ch === '\t' || ch === '\r' || ch === '\n') {
+    // Skip whitespace (including unicode whitespace such as \u00a0, \u3000)
+    if (/\s/.test(ch)) {
       i++;
       continue;
     }
@@ -239,7 +239,7 @@ export function parseDiceExpression(raw: string): ParsedDiceExpression {
       );
     }
     const modVal = consume().value!;
-    modifier = isPlus ? modVal : -modVal;
+    modifier = isPlus ? modVal : (modVal === 0 ? 0 : -modVal);
   }
 
   // 6. Trailing advantage/disadvantage (e.g., "1d20 + 5 adv")

@@ -23,9 +23,10 @@ export class CryptoRandomSource implements RandomSource {
     if (min > max) {
       throw new RangeError(`min (${min}) cannot be greater than max (${max})`);
     }
-    // crypto.randomInt(min, max) in node:crypto generates integers in [min, max)
-    // To achieve inclusive upper bound [min, max], we provide max + 1.
-    return randomInt(min, max + 1);
+    // Node.js crypto.randomInt requires min >= 0.
+    // By offsetting with range = max - min + 1, we support negative bounds safely.
+    const range = max - min + 1;
+    return randomInt(0, range) + min;
   }
 }
 

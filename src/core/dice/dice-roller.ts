@@ -69,15 +69,8 @@ export function evaluateRoll(
   let isFumble = false;
 
   if (faces === 20) {
-    if (advantageMode !== 'normal' || count === 1) {
-      // Single check or adv/dis: check the kept d20 roll
-      isCrit = keptRolls[0] === 20;
-      isFumble = keptRolls[0] === 1;
-    } else {
-      // Multiple d20 normal roll
-      isCrit = keptRolls.includes(20);
-      isFumble = !isCrit && keptRolls.includes(1);
-    }
+    isCrit = keptRolls.includes(20);
+    isFumble = keptRolls.includes(1);
   }
 
   return {

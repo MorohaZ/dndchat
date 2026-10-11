@@ -19,6 +19,16 @@ describe('CryptoRandomSource', () => {
   it('should return the single value when min equals max', () => {
     expect(source.randomInt(20, 20)).toBe(20);
     expect(source.randomInt(1, 1)).toBe(1);
+    expect(source.randomInt(-5, -5)).toBe(-5);
+  });
+
+  it('should correctly support negative bounds without throwing', () => {
+    for (let i = 0; i < 50; i++) {
+      const val = source.randomInt(-5, 5);
+      expect(val).toBeGreaterThanOrEqual(-5);
+      expect(val).toBeLessThanOrEqual(5);
+      expect(Number.isInteger(val)).toBe(true);
+    }
   });
 
   it('should throw RangeError when min > max', () => {

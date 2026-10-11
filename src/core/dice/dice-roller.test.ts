@@ -54,6 +54,16 @@ describe('DiceRoller', () => {
       expect(res.isCrit).toBe(false);
       expect(res.isFumble).toBe(false);
     });
+
+    it('should detect both crit and fumble if both 20 and 1 are rolled in a 2d20 normal roll', () => {
+      const fake = new FakeRandomSource([20, 1]);
+      const res = rollDice('2d20', fake);
+
+      expect(res.rolls).toEqual([20, 1]);
+      expect(res.keptRolls).toEqual([20, 1]);
+      expect(res.isCrit).toBe(true);
+      expect(res.isFumble).toBe(true);
+    });
   });
 
   describe('Advantage Rolls (2d20 keep highest)', () => {
@@ -174,6 +184,32 @@ describe('DiceRoller', () => {
       expect(res.subtotal).toBe(12);
       expect(res.modifier).toBe(2);
       expect(res.total).toBe(14);
+    });
+
+    it('should only check kept dice for crit and fumble on 2d20kh1', () => {
+      // rolls [20, 1] -> kept [20], dropped [1] -> crit true, fumble false
+      const fakeCrit = new FakeRandomSource([20, 1]);
+      const resCrit = rollDice('2d20kh1', fakeCrit);
+      expect(resCrit.keptRolls).toEqual([20]);
+      expect(resCrit.droppedRolls).toEqual([1]);
+      expect(resCrit.isCrit).toBe(true);
+      expect(resCrit.isFumble).toBe(false);
+
+      // rolls [10, 1] -> kept [10], dropped [1] -> crit false, fumble false
+      const fakeNormal = new FakeRandomSource([10, 1]);
+      const resNormal = rollDice('2d20kh1', fakeNormal);
+      expect(resNormal.keptRolls).toEqual([10]);
+      expect(resNormal.droppedRolls).toEqual([1]);
+      expect(resNormal.isCrit).toBe(false);
+      expect(resNormal.isFumble).toBe(false);
+
+      // rolls [1, 1] -> kept [1], dropped [1] -> crit false, fumble true
+      const fakeFumble = new FakeRandomSource([1, 1]);
+      const resFumble = rollDice('2d20kh1', fakeFumble);
+      expect(resFumble.keptRolls).toEqual([1]);
+      expect(resFumble.droppedRolls).toEqual([1]);
+      expect(resFumble.isCrit).toBe(false);
+      expect(resFumble.isFumble).toBe(true);
     });
   });
 

@@ -56,9 +56,14 @@ describe('DiceParser', () => {
       expect(res2.modifier).toBe(-2);
     });
 
-    it('should parse zero modifier "+0"', () => {
-      const res = parseDiceExpression('1d20+0');
-      expect(res.modifier).toBe(0);
+    it('should parse zero modifier "+0" and "-0" as positive 0', () => {
+      const resPlus = parseDiceExpression('1d20+0');
+      expect(resPlus.modifier).toBe(0);
+      expect(Object.is(resPlus.modifier, 0)).toBe(true);
+
+      const resMinus = parseDiceExpression('1d20-0');
+      expect(resMinus.modifier).toBe(0);
+      expect(Object.is(resMinus.modifier, 0)).toBe(true);
     });
   });
 
@@ -144,6 +149,36 @@ describe('DiceParser', () => {
       expect(res.count).toBe(1);
       expect(res.faces).toBe(20);
       expect(res.modifier).toBe(5);
+    });
+
+    it('should support Unicode whitespace such as non-breaking space and full-width ideographic space', () => {
+      const resNbsp = parseDiceExpression('1d20\u00A0+\u00A05');
+      expect(resNbsp.count).toBe(1);
+      expect(resNbsp.faces).toBe(20);
+      expect(resNbsp.modifier).toBe(5);
+
+      const resFullWidth = parseDiceExpression('1d20\u3000+\u30005');
+      expect(resFullWidth.count).toBe(1);
+      expect(resFullWidth.faces).toBe(20);
+      expect(resFullWidth.modifier).toBe(5);
+    });
+
+    it('should support compact syntax without spaces between tokens', () => {
+      const res1 = parseDiceExpression('1d20adv+5');
+      expect(res1.advantageMode).toBe('advantage');
+      expect(res1.modifier).toBe(5);
+
+      const res2 = parseDiceExpression('adv1d20+5');
+      expect(res2.advantageMode).toBe('advantage');
+      expect(res2.modifier).toBe(5);
+
+      const res3 = parseDiceExpression('dis1d20-3');
+      expect(res3.advantageMode).toBe('disadvantage');
+      expect(res3.modifier).toBe(-3);
+
+      const res4 = parseDiceExpression('4D6KH3+2');
+      expect(res4.keepHighest).toBe(3);
+      expect(res4.modifier).toBe(2);
     });
   });
 

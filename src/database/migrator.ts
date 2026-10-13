@@ -8,7 +8,7 @@ import { FileMigrationProvider, Migrator, type MigrationResult } from 'kysely/mi
  * Creates a Kysely Migrator instance using FileMigrationProvider.
  */
 export async function createMigrator(
-  db: Kysely<unknown>,
+  db: Kysely<any>,
   migrationFolder?: string
 ): Promise<Migrator> {
   const folder = migrationFolder ?? path.join(__dirname, 'migrations');
@@ -19,7 +19,13 @@ export async function createMigrator(
       fs,
       path,
       migrationFolder: folder,
-      import: (filePath: string) => import(pathToFileURL(filePath).href),
+      import: async (filePath: string) => {
+        try {
+          return await import(pathToFileURL(filePath).href);
+        } catch {
+          return require(filePath);
+        }
+      },
     }),
   });
 }
@@ -28,7 +34,7 @@ export async function createMigrator(
  * Runs all pending migrations up to the latest.
  */
 export async function migrateToLatest(
-  db: Kysely<unknown>,
+  db: Kysely<any>,
   migrationFolder?: string
 ): Promise<{ error?: unknown; results?: MigrationResult[] }> {
   const migrator = await createMigrator(db, migrationFolder);
@@ -39,7 +45,7 @@ export async function migrateToLatest(
  * Rolls back the most recently executed migration.
  */
 export async function migrateDown(
-  db: Kysely<unknown>,
+  db: Kysely<any>,
   migrationFolder?: string
 ): Promise<{ error?: unknown; results?: MigrationResult[] }> {
   const migrator = await createMigrator(db, migrationFolder);

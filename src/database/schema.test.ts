@@ -1,23 +1,62 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
+import pg from 'pg';
 import { sql, type Kysely } from 'kysely';
 import { createDatabaseClient } from './client.js';
 import { migrateToLatest, migrateDown } from './migrator.js';
-import type { Database } from './types.js';
+import {
+  getNextEligibleWebhookEvent,
+  leaseWebhookEvent,
+  commitWebhookEvent,
+  failWebhookEvent,
+} from './queries.js';
+import type { Database, WorkerConfig } from './types.js';
 
-const DATABASE_URL =
-  process.env.DATABASE_URL || 'postgres://postgres:postgres@localhost:5432/dndchat';
+const { Client } = pg;
+
+const ADMIN_DATABASE_URL =
+  process.env.ADMIN_DATABASE_URL || 'postgres://postgres:postgres@127.0.0.1:5432/postgres';
+const TEST_DATABASE_NAME = 'dndchat_test';
+const TEST_DATABASE_URL =
+  process.env.TEST_DATABASE_URL || `postgres://postgres:postgres@127.0.0.1:5432/${TEST_DATABASE_NAME}`;
+
+const TEST_WORKER_CONFIG: WorkerConfig = {
+  maxAttempts: 5,
+  leaseDurationSeconds: 30,
+};
 
 describe('PostgreSQL Database Schema & Concurrency (Task 1.3)', () => {
   let db: Kysely<Database>;
 
   beforeAll(async () => {
-    db = createDatabaseClient(DATABASE_URL);
-    // Ensure clean initial migration state
+    // 1. Isolate test database: drop if exists and create fresh dndchat_test
+    const adminClient = new Client({ connectionString: ADMIN_DATABASE_URL });
+    await adminClient.connect();
+    try {
+      await adminClient.query(`DROP DATABASE IF EXISTS ${TEST_DATABASE_NAME} WITH (FORCE);`);
+      await adminClient.query(`CREATE DATABASE ${TEST_DATABASE_NAME};`);
+    } finally {
+      await adminClient.end();
+    }
+
+    // 2. Connect client exclusively to isolated dndchat_test
+    db = createDatabaseClient(TEST_DATABASE_URL);
     await migrateToLatest(db);
   });
 
   afterAll(async () => {
-    await db.destroy();
+    // 1. Terminate client connection
+    if (db) {
+      await db.destroy();
+    }
+
+    // 2. Clean up test database
+    const adminClient = new Client({ connectionString: ADMIN_DATABASE_URL });
+    try {
+      await adminClient.connect();
+      await adminClient.query(`DROP DATABASE IF EXISTS ${TEST_DATABASE_NAME} WITH (FORCE);`);
+    } finally {
+      await adminClient.end();
+    }
   });
 
   it('1. Migration up and down cycle cleanly', async () => {
@@ -76,7 +115,7 @@ describe('PostgreSQL Database Schema & Concurrency (Task 1.3)', () => {
     // Worker A updates version 1 -> 2
     const updateA = await sql`
       UPDATE rooms
-      SET name = 'Adventure Room by Worker A', version = version + 1, updated_at = NOW()
+      SET name = 'Adventure Room by Worker A', version = version + 1
       WHERE id = ${roomId} AND version = 1
       RETURNING version;
     `.execute(db);
@@ -86,7 +125,7 @@ describe('PostgreSQL Database Schema & Concurrency (Task 1.3)', () => {
     // Worker B attempts to update with stale version 1
     const updateB = await sql`
       UPDATE rooms
-      SET name = 'Adventure Room by Worker B', version = version + 1, updated_at = NOW()
+      SET name = 'Adventure Room by Worker B', version = version + 1
       WHERE id = ${roomId} AND version = 1
       RETURNING version;
     `.execute(db);
@@ -99,7 +138,7 @@ describe('PostgreSQL Database Schema & Concurrency (Task 1.3)', () => {
     const lineUserId = `U_test_user_${Date.now()}`;
     const roomId = `room_constraints_${Date.now()}`;
 
-    // Insert Player
+    // Insert Player (line_user_id is UNIQUE NOT NULL)
     await sql`
       INSERT INTO players (id, line_user_id, display_name)
       VALUES (${playerId}::uuid, ${lineUserId}, 'Test Paladin');
@@ -244,7 +283,90 @@ describe('PostgreSQL Database Schema & Concurrency (Task 1.3)', () => {
     ).rejects.toThrow(/foreign key constraint/i);
   });
 
-  it('5. Atomic sequence increment per room concurrently yields 1..10 without gaps or collisions', async () => {
+  it('5. Trigger automatically updates updated_at column on row update', async () => {
+    const roomId = `room_trig_${Date.now()}`;
+    await sql`
+      INSERT INTO rooms (id, source_type, name, status, updated_at)
+      VALUES (${roomId}, 'group', 'Trigger Test Room', 'ACTIVE', '2020-01-01 00:00:00+00');
+    `.execute(db);
+
+    const initialRoom = await sql<{ updated_at: Date }>`
+      SELECT updated_at FROM rooms WHERE id = ${roomId};
+    `.execute(db);
+    const initialTimestamp = new Date(initialRoom.rows[0].updated_at).getTime();
+
+    // Perform an update without touching updated_at column explicitly
+    await sql`
+      UPDATE rooms
+      SET name = 'Trigger Test Room Renamed'
+      WHERE id = ${roomId};
+    `.execute(db);
+
+    const updatedRoom = await sql<{ updated_at: Date }>`
+      SELECT updated_at FROM rooms WHERE id = ${roomId};
+    `.execute(db);
+    const updatedTimestamp = new Date(updatedRoom.rows[0].updated_at).getTime();
+
+    expect(updatedTimestamp).toBeGreaterThan(initialTimestamp);
+  });
+
+  it('6. Data retention policy: clearing raw_payload succeeds, but deleting row is blocked by FK RESTRICT', async () => {
+    const playerId = '00000000-0000-0000-0000-000000000002';
+    const lineUserId = `U_retention_${Date.now()}`;
+    const roomId = `room_retention_${Date.now()}`;
+    const eventId = `evt_retention_${Date.now()}`;
+
+    await sql`
+      INSERT INTO players (id, line_user_id, display_name)
+      VALUES (${playerId}::uuid, ${lineUserId}, 'Retention Hero');
+    `.execute(db);
+
+    await sql`
+      INSERT INTO rooms (id, source_type, name, status, created_by)
+      VALUES (${roomId}, 'group', 'Retention Chamber', 'ACTIVE', ${playerId}::uuid);
+    `.execute(db);
+
+    await sql`
+      INSERT INTO webhook_events (
+        event_id, line_timestamp, correlation_id, event_type, source_type, source_id, status, raw_payload
+      ) VALUES (
+        ${eventId}, 1700000000000, 'corr_retention_1', 'message', 'group', ${roomId}, 'COMPLETED',
+        '{"text":"!roll 1d20"}'::jsonb
+      );
+    `.execute(db);
+
+    await sql`
+      INSERT INTO roll_audit_logs (
+        room_id, event_id, correlation_id, player_id, expression, total, modifier, kept_rolls
+      ) VALUES (
+        ${roomId}, ${eventId}, 'corr_retention_1', ${playerId}::uuid, '1d20', 15, 0, '[15]'::jsonb
+      );
+    `.execute(db);
+
+    // Attempting to delete webhook_events row MUST fail due to roll_audit_logs FK RESTRICT
+    await expect(
+      sql`DELETE FROM webhook_events WHERE event_id = ${eventId};`.execute(db)
+    ).rejects.toThrow(/foreign key constraint/i);
+
+    // Clearing raw_payload for privacy retention MUST succeed
+    const purgeResult = await sql`
+      UPDATE webhook_events
+      SET raw_payload = NULL
+      WHERE event_id = ${eventId}
+      RETURNING event_id, raw_payload;
+    `.execute(db);
+
+    expect(purgeResult.rows).toHaveLength(1);
+    expect((purgeResult.rows[0] as { raw_payload: unknown }).raw_payload).toBeNull();
+
+    // Audit log still exists and references event_id
+    const auditCheck = await sql<{ event_id: string }>`
+      SELECT event_id FROM roll_audit_logs WHERE event_id = ${eventId};
+    `.execute(db);
+    expect(auditCheck.rows).toHaveLength(1);
+  });
+
+  it('7. Atomic sequence increment per room concurrently yields 1..10 without gaps or collisions', async () => {
     const roomId = `room_seq_atomic_${Date.now()}`;
 
     await sql`
@@ -257,8 +379,7 @@ describe('PostgreSQL Database Schema & Concurrency (Task 1.3)', () => {
       sql<{ seq: string }>`
         UPDATE rooms
         SET last_sequence_number = last_sequence_number + 1,
-            version = version + 1,
-            updated_at = NOW()
+            version = version + 1
         WHERE id = ${roomId}
         RETURNING last_sequence_number as seq;
       `.execute(db)
@@ -270,7 +391,7 @@ describe('PostgreSQL Database Schema & Concurrency (Task 1.3)', () => {
     expect(returnedSeqs).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10]);
   });
 
-  it('6. FIFO worker pickup query: same room cannot be acquired simultaneously, different rooms run in parallel', async () => {
+  it('8. FIFO worker pickup: same room cannot be acquired simultaneously, different rooms run in parallel', async () => {
     const roomA = `room_fifo_A_${Date.now()}`;
     const roomB = `room_fifo_B_${Date.now()}`;
 
@@ -303,49 +424,20 @@ describe('PostgreSQL Database Schema & Concurrency (Task 1.3)', () => {
       );
     `.execute(db);
 
-    // Execute FIFO pickup query using consistent criteria (line_timestamp, received_sequence) in NOT EXISTS & ORDER BY
-    const candidateQuery = await sql<{ event_id: string; source_id: string }>`
-      WITH eligible_events AS (
-        SELECT DISTINCT ON (source_id)
-          e1.event_id,
-          e1.source_id,
-          e1.line_timestamp,
-          e1.received_sequence
-        FROM webhook_events e1
-        WHERE e1.status IN ('PENDING', 'PROCESSING')
-          AND (e1.locked_until IS NULL OR e1.locked_until < NOW())
-          AND e1.attempts < 5
-          AND NOT EXISTS (
-            SELECT 1
-            FROM webhook_events e0
-            WHERE e0.source_id = e1.source_id
-              AND e0.event_id <> e1.event_id
-              AND e0.status IN ('PENDING', 'PROCESSING')
-              AND (
-                e0.line_timestamp < e1.line_timestamp
-                OR (e0.line_timestamp = e1.line_timestamp AND e0.received_sequence < e1.received_sequence)
-              )
-          )
-        ORDER BY e1.source_id, e1.line_timestamp ASC, e1.received_sequence ASC
-      )
-      SELECT event_id, source_id
-      FROM eligible_events
-      ORDER BY line_timestamp ASC, received_sequence ASC
-      FOR UPDATE SKIP LOCKED
-      LIMIT 1;
-    `.execute(db);
+    // Pick next eligible event using parameterized worker configuration
+    const candidate = await getNextEligibleWebhookEvent(db, TEST_WORKER_CONFIG);
 
     // Room A Event 2 is blocked because Event A1 is PROCESSING with active lease.
     // Therefore, Room B Event 1 MUST be picked up!
-    expect(candidateQuery.rows).toHaveLength(1);
-    expect(candidateQuery.rows[0].event_id).toBe('evt_B1');
-    expect(candidateQuery.rows[0].source_id).toBe(roomB);
+    expect(candidate).not.toBeNull();
+    expect(candidate?.event_id).toBe('evt_B1');
+    expect(candidate?.source_id).toBe(roomB);
   });
 
-  it('7. Max attempts exceeded transitions to FAILED and unblocks subsequent room events', async () => {
+  it('9. Max attempts exceeded transitions to FAILED and unblocks subsequent room events', async () => {
     const roomA = `room_max_attempts_${Date.now()}`;
 
-    // Event A1 has exceeded max attempts (5) and its lease expired
+    // Event A1 has reached max attempts (5) and its lease expired
     await sql`
       INSERT INTO webhook_events (
         event_id, line_timestamp, correlation_id, event_type, source_type, source_id,
@@ -365,54 +457,20 @@ describe('PostgreSQL Database Schema & Concurrency (Task 1.3)', () => {
       );
     `.execute(db);
 
-    // Transition dead job to FAILED (simulate DLQ / sweeper)
-    await sql`
-      UPDATE webhook_events
-      SET status = 'FAILED',
-          raw_payload = NULL,
-          result_payload = '{"error":"Max attempts exceeded"}'::jsonb,
-          locked_until = NULL,
-          updated_at = NOW()
-      WHERE event_id = 'evt_failed_A1';
-    `.execute(db);
+    // Transition dead job to FAILED using failWebhookEvent helper
+    const failedResult = await failWebhookEvent(db, 'evt_failed_A1', {
+      error: 'Max attempts exceeded',
+    });
+    expect(failedResult).toBe(true);
 
-    // Now re-run candidate pickup query: Event A2 should be unblocked!
-    const candidateQuery = await sql<{ event_id: string }>`
-      WITH eligible_events AS (
-        SELECT DISTINCT ON (source_id)
-          e1.event_id,
-          e1.source_id,
-          e1.line_timestamp,
-          e1.received_sequence
-        FROM webhook_events e1
-        WHERE e1.status IN ('PENDING', 'PROCESSING')
-          AND (e1.locked_until IS NULL OR e1.locked_until < NOW())
-          AND e1.attempts < 5
-          AND NOT EXISTS (
-            SELECT 1
-            FROM webhook_events e0
-            WHERE e0.source_id = e1.source_id
-              AND e0.event_id <> e1.event_id
-              AND e0.status IN ('PENDING', 'PROCESSING')
-              AND (
-                e0.line_timestamp < e1.line_timestamp
-                OR (e0.line_timestamp = e1.line_timestamp AND e0.received_sequence < e1.received_sequence)
-              )
-          )
-        ORDER BY e1.source_id, e1.line_timestamp ASC, e1.received_sequence ASC
-      )
-      SELECT event_id
-      FROM eligible_events
-      WHERE source_id = ${roomA}
-      ORDER BY line_timestamp ASC, received_sequence ASC
-      LIMIT 1;
-    `.execute(db);
+    // Candidate pickup for roomA: Event A2 should now be unblocked!
+    const candidate = await getNextEligibleWebhookEvent(db, TEST_WORKER_CONFIG, roomA);
 
-    expect(candidateQuery.rows).toHaveLength(1);
-    expect(candidateQuery.rows[0].event_id).toBe('evt_pending_A2');
+    expect(candidate).not.toBeNull();
+    expect(candidate?.event_id).toBe('evt_pending_A2');
   });
 
-  it('8. Worker whose lease expired cannot commit (fencing lease validation)', async () => {
+  it('10. Worker whose lease expired cannot commit (fencing lease validation)', async () => {
     const eventId = `evt_fencing_${Date.now()}`;
 
     // Worker holds expired lease
@@ -427,26 +485,37 @@ describe('PostgreSQL Database Schema & Concurrency (Task 1.3)', () => {
     `.execute(db);
 
     // Worker attempts to commit results after lease expiration
-    const commitResult = await sql`
-      UPDATE webhook_events
-      SET status = 'COMPLETED',
-          result_payload = '{"result":"stale_write"}'::jsonb,
-          locked_until = NULL,
-          processed_at = NOW(),
-          updated_at = NOW()
-      WHERE event_id = ${eventId}
-        AND worker_id = 'worker_dead'
-        AND status = 'PROCESSING'
-        AND locked_until > NOW();
-    `.execute(db);
+    const commitSuccess = await commitWebhookEvent(db, eventId, 'worker_dead', {
+      result: 'stale_write',
+    });
 
-    // 0 rows updated because locked_until <= NOW()
-    expect(commitResult.numAffectedRows).toBe(0n);
+    // Commit must fail because lease expired
+    expect(commitSuccess).toBe(false);
 
-    // Event remains in PROCESSING / expired state rather than committed with stale results
+    // Event remains in PROCESSING / expired state rather than committed
     const checkEvent = await sql<{ status: string }>`
       SELECT status FROM webhook_events WHERE event_id = ${eventId};
     `.execute(db);
     expect(checkEvent.rows[0].status).toBe('PROCESSING');
+
+    // Acquire lease for a new worker succeeds
+    const leaseSuccess = await leaseWebhookEvent(
+      db,
+      eventId,
+      'worker_alive',
+      TEST_WORKER_CONFIG
+    );
+    expect(leaseSuccess).toBe(true);
+
+    // Active worker can now commit successfully
+    const commitSuccessAlive = await commitWebhookEvent(db, eventId, 'worker_alive', {
+      result: 'valid_write',
+    });
+    expect(commitSuccessAlive).toBe(true);
+
+    const checkEventCompleted = await sql<{ status: string }>`
+      SELECT status FROM webhook_events WHERE event_id = ${eventId};
+    `.execute(db);
+    expect(checkEventCompleted.rows[0].status).toBe('COMPLETED');
   });
 });

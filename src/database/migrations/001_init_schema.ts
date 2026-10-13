@@ -4,7 +4,20 @@ export async function up(db: Kysely<unknown>): Promise<void> {
   // 1. Enable pgcrypto extension for UUID generation
   await sql`CREATE EXTENSION IF NOT EXISTS "pgcrypto"`.execute(db);
 
-  // 2. Players Table (Personal Data Vault)
+  // 2. Generic updated_at trigger function
+  await sql`
+    CREATE OR REPLACE FUNCTION update_updated_at_column()
+    RETURNS TRIGGER AS $$
+    BEGIN
+      NEW.updated_at = NOW();
+      RETURN NEW;
+    END;
+    $$ language 'plpgsql';
+  `.execute(db);
+
+  // 3. Players Table (Personal Data Vault)
+  // Note: line_user_id is UNIQUE NOT NULL, which automatically creates a unique btree index.
+  // Dedicated idx_players_line_user_id is omitted to avoid redundant index overhead.
   await sql`
     CREATE TABLE players (
       id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -16,9 +29,13 @@ export async function up(db: Kysely<unknown>): Promise<void> {
     )
   `.execute(db);
 
-  await sql`CREATE INDEX idx_players_line_user_id ON players(line_user_id)`.execute(db);
+  await sql`
+    CREATE TRIGGER update_players_updated_at
+    BEFORE UPDATE ON players
+    FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
+  `.execute(db);
 
-  // 3. Webhook Events Table (Ingestion Queue & Idempotency - NO FK to rooms)
+  // 4. Webhook Events Table (Ingestion Queue & Idempotency - NO FK to rooms)
   await sql`
     CREATE TABLE webhook_events (
       event_id VARCHAR(64) PRIMARY KEY,
@@ -45,6 +62,12 @@ export async function up(db: Kysely<unknown>): Promise<void> {
   `.execute(db);
 
   await sql`
+    CREATE TRIGGER update_webhook_events_updated_at
+    BEFORE UPDATE ON webhook_events
+    FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
+  `.execute(db);
+
+  await sql`
     CREATE INDEX idx_webhook_fifo_order ON webhook_events (source_id, status, line_timestamp, received_sequence)
   `.execute(db);
 
@@ -53,7 +76,7 @@ export async function up(db: Kysely<unknown>): Promise<void> {
     WHERE status IN ('PENDING', 'PROCESSING')
   `.execute(db);
 
-  // 4. Rooms Table (Session Management & Room Ordering)
+  // 5. Rooms Table (Session Management & Room Ordering)
   await sql`
     CREATE TABLE rooms (
       id VARCHAR(64) PRIMARY KEY,
@@ -70,7 +93,13 @@ export async function up(db: Kysely<unknown>): Promise<void> {
     )
   `.execute(db);
 
-  // 5. Characters Table (D&D 5e State)
+  await sql`
+    CREATE TRIGGER update_rooms_updated_at
+    BEFORE UPDATE ON rooms
+    FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
+  `.execute(db);
+
+  // 6. Characters Table (D&D 5e State)
   await sql`
     CREATE TABLE characters (
       id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -110,9 +139,15 @@ export async function up(db: Kysely<unknown>): Promise<void> {
     )
   `.execute(db);
 
+  await sql`
+    CREATE TRIGGER update_characters_updated_at
+    BEFORE UPDATE ON characters
+    FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
+  `.execute(db);
+
   await sql`CREATE INDEX idx_characters_room ON characters(room_id)`.execute(db);
 
-  // 6. Event Logs Table (Append-Only Game Journal per Room)
+  // 7. Event Logs Table (Append-Only Game Journal per Room)
   await sql`
     CREATE TABLE event_logs (
       id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -128,7 +163,7 @@ export async function up(db: Kysely<unknown>): Promise<void> {
 
   await sql`CREATE INDEX idx_event_logs_room_seq ON event_logs(room_id, sequence_number ASC)`.execute(db);
 
-  // 7. Roll Audit Logs Table (Dice Audit Trail with Event Uniqueness)
+  // 8. Roll Audit Logs Table (Dice Audit Trail with Event Uniqueness)
   await sql`
     CREATE TABLE roll_audit_logs (
       id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -155,10 +190,14 @@ export async function up(db: Kysely<unknown>): Promise<void> {
 }
 
 export async function down(db: Kysely<unknown>): Promise<void> {
+  // Drop tables in reverse dependency order
   await sql`DROP TABLE IF EXISTS roll_audit_logs CASCADE`.execute(db);
   await sql`DROP TABLE IF EXISTS event_logs CASCADE`.execute(db);
   await sql`DROP TABLE IF EXISTS characters CASCADE`.execute(db);
   await sql`DROP TABLE IF EXISTS rooms CASCADE`.execute(db);
   await sql`DROP TABLE IF EXISTS webhook_events CASCADE`.execute(db);
   await sql`DROP TABLE IF EXISTS players CASCADE`.execute(db);
+
+  // Drop triggers & trigger function
+  await sql`DROP FUNCTION IF EXISTS update_updated_at_column() CASCADE`.execute(db);
 }

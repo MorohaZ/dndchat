@@ -7,6 +7,16 @@ export type RoomSourceType = 'group' | 'room' | 'user';
 export type JsonObject = Record<string, unknown>;
 export type DiceRollNumbers = number[];
 
+export interface WorkerConfig {
+  maxAttempts: number;
+  leaseDurationSeconds: number;
+}
+
+export const DEFAULT_WORKER_CONFIG: WorkerConfig = {
+  maxAttempts: 5,
+  leaseDurationSeconds: 30,
+};
+
 export interface PlayersTable {
   id: Generated<string>; // UUID
   line_user_id: string;

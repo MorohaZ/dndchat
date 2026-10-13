@@ -2,30 +2,43 @@
 # Pre-commit hook to scan staged changes for secrets with gitleaks
 # To enable this hook in this repo: git config core.hooksPath .githooks
 
+# Locate gitleaks binary from PATH or common Windows package managers (WinGet/Scoop/Choco)
+GITLEAKS_BIN=""
 if command -v gitleaks >/dev/null 2>&1; then
-  echo "==> Running gitleaks pre-commit check..."
-  # Gitleaks v8+ uses 'protect --staged', older/alternative builds use 'git --staged' or 'detect --staged'
-  if gitleaks protect --help >/dev/null 2>&1; then
-    gitleaks protect --staged --verbose --redact
+  GITLEAKS_BIN="gitleaks"
+elif [ -n "$LOCALAPPDATA" ] && [ -f "$LOCALAPPDATA/Microsoft/WinGet/Packages/Gitleaks.Gitleaks_Microsoft.Winget.Source_8wekyb3d8bbwe/gitleaks.exe" ]; then
+  GITLEAKS_BIN="$LOCALAPPDATA/Microsoft/WinGet/Packages/Gitleaks.Gitleaks_Microsoft.Winget.Source_8wekyb3d8bbwe/gitleaks.exe"
+elif [ -f "$HOME/AppData/Local/Microsoft/WinGet/Packages/Gitleaks.Gitleaks_Microsoft.Winget.Source_8wekyb3d8bbwe/gitleaks.exe" ]; then
+  GITLEAKS_BIN="$HOME/AppData/Local/Microsoft/WinGet/Packages/Gitleaks.Gitleaks_Microsoft.Winget.Source_8wekyb3d8bbwe/gitleaks.exe"
+fi
+
+if [ -n "$GITLEAKS_BIN" ]; then
+  echo "==> Running gitleaks pre-commit check using $GITLEAKS_BIN..."
+  # Explicitly specify project config .gitleaks.toml and --redact
+  CONFIG_ARG="--config=.gitleaks.toml"
+  
+  if "$GITLEAKS_BIN" protect --help >/dev/null 2>&1; then
+    "$GITLEAKS_BIN" protect --staged "$CONFIG_ARG" --verbose --redact
     EXIT_CODE=$?
-  elif gitleaks git --help >/dev/null 2>&1; then
-    gitleaks git --staged --verbose --redact
+  elif "$GITLEAKS_BIN" git --help >/dev/null 2>&1; then
+    "$GITLEAKS_BIN" git --staged "$CONFIG_ARG" --verbose --redact
     EXIT_CODE=$?
   else
-    # Fallback for alternative gitleaks CLI signatures
-    gitleaks detect --staged --verbose --redact
+    "$GITLEAKS_BIN" detect --staged "$CONFIG_ARG" --verbose --redact
     EXIT_CODE=$?
   fi
 
   if [ $EXIT_CODE -ne 0 ]; then
-    echo "ERROR: gitleaks found potential secrets in your staged changes."
+    echo "================================================================================"
+    echo "ERROR: gitleaks found potential secrets in your staged changes!"
     echo "Please remove secrets before committing, or update .gitleaks.toml allowlist if verified false positive."
+    echo "================================================================================"
     exit 1
   fi
-  echo "==> Gitleaks scan passed."
+  echo "==> Gitleaks scan passed. No secrets detected in staged changes."
 else
   echo "================================================================================"
-  echo "[!] WARNING: gitleaks executable was NOT found in your PATH!"
+  echo "[!] WARNING: gitleaks executable was NOT found in your PATH or WinGet packages!"
   echo "    Pre-commit secret scanning cannot run locally."
   echo "    DO NOT commit until you verify that no secrets or API credentials are staged."
   echo ""

@@ -1,6 +1,9 @@
 # Gitleaks configuration
-# Target specific false positives in test mock data without disabling project-wide secret scanning.
+# Extend default gitleaks ruleset (160+ detectors) and apply specific allowlists.
 # Documentation: https://github.com/gitleaks/gitleaks
+
+[extend]
+useDefault = true
 
 [allowlist]
 description = "Allowlist test files used strictly for automated tests"
@@ -9,4 +12,3 @@ paths = [
   '''src[/\\]observability[/\\]logger\.test\.ts''',
   '''src[/\\]index\.test\.ts'''
 ]
-

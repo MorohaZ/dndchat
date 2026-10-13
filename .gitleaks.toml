@@ -1,5 +1,5 @@
 # Gitleaks configuration
-# Extend default gitleaks ruleset (160+ detectors) and apply specific allowlists.
+# Extend default gitleaks ruleset and apply specific allowlists.
 # Documentation: https://github.com/gitleaks/gitleaks
 
 [extend]

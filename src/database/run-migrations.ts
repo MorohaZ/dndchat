@@ -2,8 +2,13 @@ import { createDatabaseClient } from './client.js';
 import { migrateToLatest } from './migrator.js';
 
 async function main(): Promise<void> {
-  const connectionString =
-    process.env.DATABASE_URL || 'postgres://postgres:postgres@127.0.0.1:5432/dndchat';
+  const connectionString = process.env.DATABASE_URL;
+  if (!connectionString) {
+    console.error(
+      '[migrator] DATABASE_URL is required. No default database is used, to avoid migrating the wrong database.'
+    );
+    process.exit(1);
+  }
 
   console.log('[migrator] Connecting to database...');
   const db = createDatabaseClient(connectionString);

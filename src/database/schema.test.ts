@@ -13,11 +13,17 @@ import type { Database, WorkerConfig } from './types.js';
 
 const { Client } = pg;
 
-const ADMIN_DATABASE_URL =
-  process.env.ADMIN_DATABASE_URL || 'postgres://postgres:postgres@127.0.0.1:5432/postgres';
-const TEST_DATABASE_NAME = 'dndchat_test';
-const TEST_DATABASE_URL =
-  process.env.TEST_DATABASE_URL || `postgres://postgres:postgres@127.0.0.1:5432/${TEST_DATABASE_NAME}`;
+// Database names are pinned as constants and are NEVER read from environment variables,
+// so DROP DATABASE can only ever target the isolated test database.
+// The admin connection uses the built-in maintenance database "postgres" (never "dndchat").
+const TEST_DATABASE_NAME = 'dndchat_test' as const;
+const ADMIN_DATABASE_URL = 'postgres://postgres:postgres@127.0.0.1:5432/postgres';
+const TEST_DATABASE_URL = `postgres://postgres:postgres@127.0.0.1:5432/${TEST_DATABASE_NAME}`;
+
+// Defense in depth: fail loudly if someone edits the constants to point at a non-test DB.
+if (!/_test$/.test(TEST_DATABASE_NAME) || new URL(TEST_DATABASE_URL).pathname !== `/${TEST_DATABASE_NAME}`) {
+  throw new Error('Refusing to run: test database name must end with "_test"');
+}
 
 const TEST_WORKER_CONFIG: WorkerConfig = {
   maxAttempts: 5,
@@ -59,12 +65,25 @@ describe('PostgreSQL Database Schema & Concurrency (Task 1.3)', () => {
     }
   });
 
-  it('1. Migration up and down cycle cleanly', async () => {
+  it('1. Migration up and down cycle cleanly (down() also drops the trigger function)', async () => {
+    // Safety: every statement in this suite must run on the isolated test database
+    const currentDb = await sql<{ name: string }>`SELECT current_database() AS name;`.execute(db);
+    expect(currentDb.rows[0].name).toBe('dndchat_test');
+
+    const triggerFnExists = async (): Promise<boolean> => {
+      const r = await sql<{ exists: boolean }>`
+        SELECT EXISTS (SELECT 1 FROM pg_proc WHERE proname = 'update_updated_at_column') AS exists;
+      `.execute(db);
+      return r.rows[0].exists;
+    };
+
+    expect(await triggerFnExists()).toBe(true);
+
     // Test rollback
     const downResult = await migrateDown(db);
     expect(downResult.error).toBeUndefined();
 
-    // Verify tables are dropped
+    // Verify tables and trigger function are dropped
     const checkTable = await sql<{ exists: boolean }>`
       SELECT EXISTS (
         SELECT FROM information_schema.tables 
@@ -72,6 +91,7 @@ describe('PostgreSQL Database Schema & Concurrency (Task 1.3)', () => {
       ) as exists;
     `.execute(db);
     expect(checkTable.rows[0].exists).toBe(false);
+    expect(await triggerFnExists()).toBe(false);
 
     // Re-migrate to latest
     const upResult = await migrateToLatest(db);
@@ -84,6 +104,7 @@ describe('PostgreSQL Database Schema & Concurrency (Task 1.3)', () => {
       ) as exists;
     `.execute(db);
     expect(checkTableAfter.rows[0].exists).toBe(true);
+    expect(await triggerFnExists()).toBe(true);
   });
 
   it('2. Events before room exists succeed without foreign key violation', async () => {

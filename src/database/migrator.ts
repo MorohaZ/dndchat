@@ -1,11 +1,17 @@
 import * as path from 'node:path';
 import { promises as fs } from 'node:fs';
-import { pathToFileURL } from 'node:url';
 import type { Kysely } from 'kysely';
 import { FileMigrationProvider, Migrator, type MigrationResult } from 'kysely/migration';
 
 /**
  * Creates a Kysely Migrator instance using FileMigrationProvider.
+ *
+ * Module loading note: this project compiles to CommonJS (tsconfig "module": "commonjs"),
+ * so tsc rewrites `import(x)` into `Promise.resolve().then(() => require(x))`. `require`
+ * accepts a plain absolute path but NOT a `file://` URL, so the plain path is passed here.
+ * Under Vitest the same `import(path)` is handled by vite-node. Errors thrown while loading
+ * a migration file are intentionally NOT caught: Kysely reports them via
+ * `MigrationResultSet.error`.
  */
 export async function createMigrator(
   db: Kysely<any>,
@@ -19,13 +25,7 @@ export async function createMigrator(
       fs,
       path,
       migrationFolder: folder,
-      import: async (filePath: string) => {
-        try {
-          return await import(pathToFileURL(filePath).href);
-        } catch {
-          return require(filePath);
-        }
-      },
+      import: (filePath: string) => import(filePath),
     }),
   });
 }

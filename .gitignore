@@ -15,6 +15,7 @@ build/
 # Database backups & dumps
 backups/
 *.sql
+!scripts/db/create-test-db.sql
 *.dump
 *.gz
 

@@ -1,7 +1,6 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import pg from 'pg';
-import { sql, type Kysely } from 'kysely';
-import { createDatabaseClient } from './client.js';
+import { sql, PostgresDialect, Kysely } from 'kysely';
 import { migrateToLatest, migrateDown } from './migrator.js';
 import {
   getNextEligibleWebhookEvent,
@@ -10,20 +9,20 @@ import {
   failWebhookEvent,
 } from './queries.js';
 import type { Database, WorkerConfig } from './types.js';
+import { assertSafeTestDatabase } from './testing/test-safety.js';
+import {
+  explainConnectError,
+  resetPublicSchema,
+  snapshotPublic,
+  type PublicSchemaSnapshot,
+} from './testing/sandbox.js';
 
-const { Client } = pg;
+const { Client, Pool } = pg;
 
-// Database names are pinned as constants and are NEVER read from environment variables,
-// so DROP DATABASE can only ever target the isolated test database.
-// The admin connection uses the built-in maintenance database "postgres" (never "dndchat").
-const TEST_DATABASE_NAME = 'dndchat_test' as const;
-const ADMIN_DATABASE_URL = 'postgres://postgres:postgres@127.0.0.1:5432/postgres';
-const TEST_DATABASE_URL = `postgres://postgres:postgres@127.0.0.1:5432/${TEST_DATABASE_NAME}`;
-
-// Defense in depth: fail loudly if someone edits the constants to point at a non-test DB.
-if (!/_test$/.test(TEST_DATABASE_NAME) || new URL(TEST_DATABASE_URL).pathname !== `/${TEST_DATABASE_NAME}`) {
-  throw new Error('Refusing to run: test database name must end with "_test"');
-}
+// Connection URL is pinned and strictly validated by assertSafeTestDatabase.
+// Tests connect exclusively to the isolated dndchat_test sandbox database.
+const TEST_DATABASE_URL = 'postgres://postgres:postgres@127.0.0.1:5432/dndchat_test';
+const safeConfig = assertSafeTestDatabase(TEST_DATABASE_URL);
 
 const TEST_WORKER_CONFIG: WorkerConfig = {
   maxAttempts: 5,
@@ -32,79 +31,132 @@ const TEST_WORKER_CONFIG: WorkerConfig = {
 
 describe('PostgreSQL Database Schema & Concurrency (Task 1.3)', () => {
   let db: Kysely<Database>;
+  let s0Snapshot: PublicSchemaSnapshot;
 
   beforeAll(async () => {
-    // 1. Isolate test database: drop if exists and create fresh dndchat_test
-    const adminClient = new Client({ connectionString: ADMIN_DATABASE_URL });
-    await adminClient.connect();
+    // 1. Pre-check connection with short timeout (2000ms)
+    const client = new Client({
+      host: safeConfig.host,
+      port: safeConfig.port,
+      user: safeConfig.user,
+      password: safeConfig.password,
+      database: safeConfig.database,
+      connectionTimeoutMillis: 2000,
+    });
+
     try {
-      await adminClient.query(`DROP DATABASE IF EXISTS ${TEST_DATABASE_NAME} WITH (FORCE);`);
-      await adminClient.query(`CREATE DATABASE ${TEST_DATABASE_NAME};`);
-    } finally {
-      await adminClient.end();
+      await client.connect();
+    } catch (err) {
+      throw new Error(explainConnectError(err, safeConfig));
     }
 
-    // 2. Connect client exclusively to isolated dndchat_test
-    db = createDatabaseClient(TEST_DATABASE_URL);
-    await migrateToLatest(db);
+    // 2. Verify sandbox marker and reset public schema
+    try {
+      await resetPublicSchema(client);
+    } finally {
+      await client.end();
+    }
+
+    // 3. Connect Kysely exclusively to isolated dndchat_test
+    const pool = new Pool(safeConfig);
+    db = new Kysely<Database>({
+      dialect: new PostgresDialect({ pool }),
+    });
+
+    // Capture baseline public schema snapshot (S0) before migrations
+    s0Snapshot = await snapshotPublic(db);
+
+    // 4. Run migrations
+    const upResult = await migrateToLatest(db);
+    if (upResult.error) {
+      throw upResult.error;
+    }
   });
 
   afterAll(async () => {
-    // 1. Terminate client connection
+    // Terminate client connection pool cleanly (leave database intact for inspection)
     if (db) {
       await db.destroy();
     }
-
-    // 2. Clean up test database
-    const adminClient = new Client({ connectionString: ADMIN_DATABASE_URL });
-    try {
-      await adminClient.connect();
-      await adminClient.query(`DROP DATABASE IF EXISTS ${TEST_DATABASE_NAME} WITH (FORCE);`);
-    } finally {
-      await adminClient.end();
-    }
   });
 
-  it('1. Migration up and down cycle cleanly (down() also drops the trigger function)', async () => {
+  it('1. Migration up and down cycle cleanly (snapshot verification + explicit checks)', async () => {
     // Safety: every statement in this suite must run on the isolated test database
     const currentDb = await sql<{ name: string }>`SELECT current_database() AS name;`.execute(db);
     expect(currentDb.rows[0].name).toBe('dndchat_test');
 
-    const triggerFnExists = async (): Promise<boolean> => {
-      const r = await sql<{ exists: boolean }>`
-        SELECT EXISTS (SELECT 1 FROM pg_proc WHERE proname = 'update_updated_at_column') AS exists;
-      `.execute(db);
-      return r.rows[0].exists;
-    };
+    // S1: Snapshot after initial migrateToLatest
+    const s1Snapshot = await snapshotPublic(db);
 
-    expect(await triggerFnExists()).toBe(true);
+    // Verify S1 is non-empty and has expected tables, triggers, and function
+    const tableNames = s1Snapshot.classes.filter((c) => c.kind === 'r').map((c) => c.name).sort();
+    expect(tableNames).toEqual([
+      'characters',
+      'event_logs',
+      'players',
+      'roll_audit_logs',
+      'rooms',
+      'webhook_events',
+    ]);
+
+    const functionNames = s1Snapshot.functions.map((f) => f.name);
+    expect(functionNames).toContain('update_updated_at_column');
+
+    const triggerNames = s1Snapshot.triggers.map((t) => t.name).sort();
+    expect(triggerNames).toEqual([
+      'update_characters_updated_at',
+      'update_players_updated_at',
+      'update_rooms_updated_at',
+      'update_webhook_events_updated_at',
+    ]);
 
     // Test rollback
     const downResult = await migrateDown(db);
     expect(downResult.error).toBeUndefined();
 
-    // Verify tables and trigger function are dropped
-    const checkTable = await sql<{ exists: boolean }>`
-      SELECT EXISTS (
-        SELECT FROM information_schema.tables 
-        WHERE table_schema = 'public' AND table_name = 'rooms'
-      ) as exists;
-    `.execute(db);
-    expect(checkTable.rows[0].exists).toBe(false);
-    expect(await triggerFnExists()).toBe(false);
+    // S2: Snapshot after rollback
+    const s2Snapshot = await snapshotPublic(db);
 
-    // Re-migrate to latest
+    // S2 must equal S0 (all user objects cleaned up)
+    expect(s2Snapshot).toEqual(s0Snapshot);
+
+    // Explicit assertions on down state:
+    // - No user tables in public (only kysely internal tables may exist)
+    const tablesAfterDown = await sql<{ relname: string }>`
+      SELECT relname FROM pg_class c
+      JOIN pg_namespace n ON n.oid = c.relnamespace
+      WHERE n.nspname = 'public' AND c.relkind = 'r'
+      ORDER BY relname;
+    `.execute(db);
+    const tableList = tablesAfterDown.rows.map((r) => r.relname);
+    expect(tableList.every((t) => t.startsWith('kysely_migration'))).toBe(true);
+
+    // - No user functions in public (excluding extensions like pgcrypto)
+    expect(s2Snapshot.functions).toHaveLength(0);
+
+    // - No user triggers
+    expect(s2Snapshot.triggers).toHaveLength(0);
+
+    // - No user sequences (e.g. webhook_events_received_sequence_seq must be gone)
+    const sequencesAfterDown = await sql<{ relname: string }>`
+      SELECT relname FROM pg_class c
+      JOIN pg_namespace n ON n.oid = c.relnamespace
+      WHERE n.nspname = 'public' AND c.relkind = 'S';
+    `.execute(db);
+    expect(sequencesAfterDown.rows).toHaveLength(0);
+
+    // - kysely_migration tracking table has 0 rows after full rollback
+    const migrationRows = await sql<{ count: string }>`
+      SELECT count(*)::text AS count FROM kysely_migration;
+    `.execute(db);
+    expect(migrationRows.rows[0].count).toBe('0');
+
+    // Re-migrate to latest so subsequent tests have schema
     const upResult = await migrateToLatest(db);
     expect(upResult.error).toBeUndefined();
 
-    const checkTableAfter = await sql<{ exists: boolean }>`
-      SELECT EXISTS (
-        SELECT FROM information_schema.tables 
-        WHERE table_schema = 'public' AND table_name = 'rooms'
-      ) as exists;
-    `.execute(db);
-    expect(checkTableAfter.rows[0].exists).toBe(true);
-    expect(await triggerFnExists()).toBe(true);
+    const s3Snapshot = await snapshotPublic(db);
+    expect(s3Snapshot).toEqual(s1Snapshot);
   });
 
   it('2. Events before room exists succeed without foreign key violation', async () => {
